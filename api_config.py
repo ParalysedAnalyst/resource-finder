@@ -1,30 +1,46 @@
 """
 Helper API calls for Mapbox Isochrone, postcodes.io and OSRM route distance.
-
-Dependencies (pip):
-    pip install requests
-
-Usage:
-    from api_config import fetch_isochrone, osrm_route, geocode_postcode
 """
 
 import os
-from typing import Dict, List
-
+from typing import Dict, List, Optional
 import requests
+import warnings
+import urllib3
 
-# --- SSL verification controls (for corporate TLS interception) ---
-# Set REQUESTS_CA_BUNDLE to your corporate root CA (e.g., C:\certs\corp-root.pem)
-# Optionally set DISABLE_SSL_VERIFY=true for a local smoke test (not recommended).
-_CA_BUNDLE = os.getenv("REQUESTS_CA_BUNDLE")
-_DISABLE_VERIFY = os.getenv("DISABLE_SSL_VERIFY", "").lower() in ("1", "true", "yes")
+# Verification & proxies
+# SSL verification default is False unless overridden by env var
+VERIFY_DEFAULT = os.getenv("VERIFY_DEFAULT", "false").lower() in ("1", "true", "yes")
+
+# Suppress TLS warnings only if explicitly requested (default: on for your case)
+SUPPRESS_TLS_WARNINGS = os.getenv("SUPPRESS_TLS_WARNINGS", "true").lower() in ("1", "true", "yes")
+if SUPPRESS_TLS_WARNINGS:
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    warnings.filterwarnings(
+        "ignore",
+        message=r"Unverified HTTPS request is being made to host",
+        category=urllib3.exceptions.InsecureRequestWarning,
+        module=r"urllib3\.connectionpool",
+    )
+
 
 def _verify_arg():
-    if _CA_BUNDLE:
-        return _CA_BUNDLE
-    return False if _DISABLE_VERIFY else True
+    """
+    Decide the 'verify' value for requests.get:
+    - If REQUESTS_CA_BUNDLE is set, use that path.
+    - Else use VERIFY_DEFAULT (defaults to False here).
+    """
+    ca_bundle = os.getenv("REQUESTS_CA_BUNDLE")
+    if ca_bundle:
+        return ca_bundle
+    return VERIFY_DEFAULT  # False by default
 
-# --- Mapbox Isochrone ---
+def _proxies():
+    http = os.getenv("HTTP_PROXY") or os.getenv("http_proxy")
+    https = os.getenv("HTTPS_PROXY") or os.getenv("https_proxy")
+    return {"http": http, "https": https} if (http or https) else None
+
+# Mapbox Isochrone API
 API_KEY = os.getenv(
     "MAPBOX_TOKEN",
     "pk.eyJ1IjoiYWxleGNsYXJrZ2MiLCJhIjoiY2lqNXY4YWdhMDA0N3Z4bTNtd3NubXdjaSJ9.rEKvp-TAA_eCrA-snwCgsg",
@@ -33,32 +49,23 @@ BASE_URL = "https://api.mapbox.com/isochrone/v1/mapbox"
 PROFILE = "driving-traffic"
 CONTOUR_LEVELS = [15, 30, 45, 60]  # minutes
 
-# Allow override via env; fall back to your local path
-SAVE_DIR = os.getenv(
-    "ISOCHRONES_DIR",
-    "C:/Users/alex.clark/OneDrive - Ground Control/Learning Resources/Data Science Degree/Computational Concepts and Algorithms/010/Isochrones/",
-)
-
-def fetch_isochrone(lon: float, lat: float, minutes: List[int] = None):
+def fetch_isochrone(lon: float, lat: float):
     """
-    Return GeoJSON isochrone polygons for the given point.
+    One API call that returns all requested contours (15/30/45/60 minutes).
+    GUI code can filter by contour locally without making another request.
     """
-    if minutes is None:
-        minutes = CONTOUR_LEVELS
     url = f"{BASE_URL}/{PROFILE}/{lon},{lat}"
     params = {
-        "contours_minutes": ",".join(str(m) for m in minutes),
+        "contours_minutes": ",".join(str(m) for m in CONTOUR_LEVELS),
         "polygons": "true",
         "access_token": API_KEY,
     }
-    r = requests.get(url, params=params, timeout=30, verify=_verify_arg())
+    r = requests.get(url, params=params, timeout=30, verify=_verify_arg(), proxies=_proxies())
     r.raise_for_status()
     return r.json()
 
-# --- OSRM for route distance & simple CO2 estimate ---
+# OSRM for route distance & CO2 estimate
 OSRM_BASE = os.getenv("OSRM_BASE", "https://router.project-osrm.org")
-
-# Simple average tailpipe factor (kg CO2e per km)
 CO2_PER_KM_KG = float(os.getenv("CO2_PER_KM_KG", "0.171"))
 
 def osrm_route(
@@ -66,11 +73,7 @@ def osrm_route(
     start_lat: float,
     dest_lon: float,
     dest_lat: float,
-):
-    """
-    Query OSRM for a single driving route.
-    Returns distance (km), duration (minutes), and a basic CO2 estimate (kg).
-    """
+) -> Dict[str, float]:
     url = f"{OSRM_BASE}/route/v1/driving/{start_lon},{start_lat};{dest_lon},{dest_lat}"
     params = {
         "overview": "false",
@@ -78,29 +81,39 @@ def osrm_route(
         "steps": "false",
         "geometries": "geojson",
     }
-    r = requests.get(url, params=params, timeout=30, verify=_verify_arg())
+    r = requests.get(url, params=params, timeout=30, verify=_verify_arg(), proxies=_proxies())
     r.raise_for_status()
-    data = r.json()
-    route = data["routes"][0]
-
+    route = r.json()["routes"][0]
     distance_km = route["distance"] / 1000.0
     duration_min = route["duration"] / 60.0
     co2_kg = distance_km * CO2_PER_KM_KG
+    return {"distance_km": distance_km, "duration_min": duration_min, "co2_kg": co2_kg}
 
-    return {
-        "distance_km": distance_km,
-        "duration_min": duration_min,
-        "co2_kg": co2_kg,
-    }
+# postcodes.io geocoding
+class PostcodeNotFound(Exception):
+    """Raised when postcodes.io returns 404 for a supplied postcode."""
+    pass
 
-# --- postcodes.io geocoding ---
 def geocode_postcode(postcode: str):
     """
     Return (lon, lat) for a UK postcode via postcodes.io.
-    Keep it minimal; add error handling later if you wish.
+
+    Raises
+    ------
+    PostcodeNotFound : if the postcode cannot be found (HTTP 404).
+    requests.HTTPError : for other HTTP errors.
     """
-    url = f"https://api.postcodes.io/postcodes/{postcode.replace(' ', '')}"
-    r = requests.get(url, timeout=15, verify=_verify_arg())
+    pc = postcode.strip().upper()
+    url = f"https://api.postcodes.io/postcodes/{pc.replace(' ', '')}"
+    r = requests.get(url, timeout=15, verify=_verify_arg(), proxies=_proxies())
+
+    if r.status_code == 404:
+        try:
+            msg = r.json().get("error", f"Postcode not found: {pc}")
+        except Exception:
+            msg = f"Postcode not found: {pc}"
+        raise PostcodeNotFound(msg)
+
     r.raise_for_status()
     result = r.json()["result"]
     return float(result["longitude"]), float(result["latitude"])
