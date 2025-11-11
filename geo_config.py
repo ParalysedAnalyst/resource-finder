@@ -50,7 +50,7 @@ def filter_teams_by_minutes(teams_gdf: gpd.GeoDataFrame,
     Return only teams contained within the isochrone polygon for `minutes`.
 
     Notes:
-    - If Mapbox returns multiple polygons for the same contour, we union them.
+    - If Mapbox returns multiple polygons for the same contour, union them.
     """
     sel = iso_gdf[iso_gdf["minutes"] == minutes]
     if sel.empty:
@@ -61,3 +61,37 @@ def filter_teams_by_minutes(teams_gdf: gpd.GeoDataFrame,
     target_poly = sel.unary_union
     mask = teams_gdf.within(target_poly)
     return teams_gdf[mask].reset_index(drop=True)
+
+def list_business_units(df):
+    """
+    Return a sorted list of distinct Business Units (for a dropdown).
+    """
+    vals = df["BusinessUnit"].dropna().astype(str).unique().tolist()
+    vals.sort()
+    return ["(Any)"] + vals
+
+def filter_by_business_unit(teams_gdf, business_unit: str | None):
+    """
+    If business_unit is '(Any)' or None, return unchanged.
+    Otherwise filter rows where BusinessUnit == business_unit.
+    """
+    if not business_unit or business_unit == "(Any)":
+        return teams_gdf
+    return teams_gdf[teams_gdf["BusinessUnit"].astype(str) == str(business_unit)].reset_index(drop=True)
+
+def filter_by_internal_flag(teams_gdf, internal_flag: int | None):
+    """
+    internal_flag can be:
+      - 1 for Directly Employed
+      - 0 for Contractor
+      - None for both (no filtering)
+    """
+    if internal_flag in (0, 1):
+        return teams_gdf[teams_gdf["InternalContractor"].astype(int) == int(internal_flag)].reset_index(drop=True)
+    return teams_gdf
+
+def apply_team_filters(teams_gdf, *, business_unit: str | None = None, internal_flag: int | None = None):
+    """Chain BU and internal/contractor filters."""
+    out = filter_by_business_unit(teams_gdf, business_unit)
+    out = filter_by_internal_flag(out, internal_flag)
+    return out.reset_index(drop=True)
