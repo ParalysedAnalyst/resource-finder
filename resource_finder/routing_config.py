@@ -6,7 +6,7 @@ Routing helpers:
 
 import math
 import pandas as pd
-from api_config import osrm_route
+from .api_config import osrm_route # amended to relative import
 
 # Distance around postcode calculated to allow filtering of teams within x km to reduce API calls
 def haversine_km(lat1, lon1, lat2, lon2):

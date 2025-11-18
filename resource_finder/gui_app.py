@@ -161,7 +161,21 @@ class ResourceFinderApp:
         self._populate(out)
         self.status.set(f"Calculated routes for {len(out)} team(s).")
 
+def main(fieldteams=None):
+    import pandas as pd
+    import tkinter as tk
+
+    # If nothing passed in, start with an empty frame (or load your SQL here)
+    if fieldteams is None:
+        fieldteams = pd.DataFrame(columns=[
+            "intContractorID", "Contractor", "BusinessUnit", "Postcode",
+            "Latitude", "Longitude", "InternalContractor"
+        ])
+
+    root = tk.Tk()
+    app = ResourceFinderApp(root, fieldteams)
+    root.geometry("1000x640")
+    root.mainloop()
+
 if __name__ == "__main__":
-    # For manual runs you can pipe in a tiny DataFrame here if needed.
-    df = pd.DataFrame(columns=["intContractorID","Contractor","BusinessUnit","Postcode","Latitude","Longitude","InternalContractor"])
-    root = tk.Tk(); app = ResourceFinderApp(root, df); root.geometry("1000x640"); root.mainloop()
+    main()
