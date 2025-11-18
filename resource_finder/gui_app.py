@@ -9,9 +9,10 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import pandas as pd
 
-from api_config import geocode_postcode, fetch_isochrone, PostcodeNotFound
-from geo_config import isochrone_to_gdf, teams_to_gdf, filter_teams_by_minutes, list_business_units, apply_team_filters
-from routing_config import route_rank_teams
+from .api_config import geocode_postcode, fetch_isochrone, PostcodeNotFound
+from .geo_config import isochrone_to_gdf, teams_to_gdf, filter_teams_by_minutes, list_business_units, apply_team_filters
+from .routing_config import route_rank_teams
+
 
 # GC human_nature
 human_nature = {
