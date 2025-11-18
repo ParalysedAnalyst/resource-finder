@@ -6,7 +6,7 @@ External API helpers:
 """
 
 import os
-import warningsgit
+import warnings
 from typing import Dict
 import requests
 import urllib3
