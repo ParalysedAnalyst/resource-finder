@@ -10,7 +10,7 @@ import geopandas as gpd
 from shapely.geometry import Point, shape
 import pandas as pd
 
-def isochrone_to_gdf(iso_geojson) -> gpd.GeoDataFrame:
+def isochrone_to_gdf(iso_geojson):
     """
     Convert Mapbox Isochrone GeoJSON to a GeoDataFrame with columns:
       - minutes (int)
@@ -31,7 +31,7 @@ def isochrone_to_gdf(iso_geojson) -> gpd.GeoDataFrame:
     return gdf.sort_values("minutes").reset_index(drop=True)
 
 
-def teams_to_gdf(fieldteams_df: pd.DataFrame) -> gpd.GeoDataFrame:
+def teams_to_gdf(fieldteams_df: pd.DataFrame):
     """
     Build a GeoDataFrame of team locations from columns: Latitude, Longitude.
     Drops rows missing coordinates.
@@ -45,7 +45,7 @@ def teams_to_gdf(fieldteams_df: pd.DataFrame) -> gpd.GeoDataFrame:
 
 def filter_teams_by_minutes(teams_gdf: gpd.GeoDataFrame,
                             iso_gdf: gpd.GeoDataFrame,
-                            minutes: int = 60) -> gpd.GeoDataFrame:
+                            minutes: int = 60):
     """
     Return only teams contained within the isochrone polygon for `minutes`.
 
