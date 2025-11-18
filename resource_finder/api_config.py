@@ -57,21 +57,33 @@ def fetch_isochrone(lon: float, lat: float):
 OSRM_BASE = os.getenv("OSRM_BASE", "https://router.project-osrm.org")
 CO2_PER_KM_KG = float(os.getenv("CO2_PER_KM_KG", "0.171"))
 
+# OSRM API caller
 def osrm_route(
     start_lon: float,
     start_lat: float,
     dest_lon: float,
     dest_lat: float,
+    include_geometry: bool = False,
 ) -> Dict[str, float]:
-    """Return distance_km, duration_min, co2_kg for a single route."""
+    """
+    Return distance_km, duration_min, co2_kg and optionally 'geometry' (GeoJSON LineString).
+    """
     url = f"{OSRM_BASE}/route/v1/driving/{start_lon},{start_lat};{dest_lon},{dest_lat}"
-    params = {"overview": "false", "alternatives": "false", "steps": "false", "geometries": "geojson"}
+    params = {
+        "overview": "full" if include_geometry else "false",
+        "alternatives": "false",
+        "steps": "false",
+        "geometries": "geojson",
+    }
     r = requests.get(url, params=params, timeout=30, verify=_verify_arg(), proxies=_proxies())
     r.raise_for_status()
     route = r.json()["routes"][0]
     distance_km = route["distance"] / 1000.0
     duration_min = route["duration"] / 60.0
-    return {"distance_km": distance_km, "duration_min": duration_min, "co2_kg": distance_km * CO2_PER_KM_KG}
+    out = {"distance_km": distance_km, "duration_min": duration_min, "co2_kg": distance_km * CO2_PER_KM_KG}
+    if include_geometry:
+        out["geometry"] = route.get("geometry")  # dict with 'coordinates'
+    return out
 
 # postcodes.io API
 class PostcodeNotFound(Exception):
