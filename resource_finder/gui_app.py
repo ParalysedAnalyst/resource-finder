@@ -264,7 +264,7 @@ class ResourceFinderApp:
             return
 
         self.routes_df = routed
-        self._populate(routed[self.COLS])
+        self._populate(routed[list(self.COLS)])
 
         # Auto-select fastest row and draw its route
         first_id = next(iter(self.tree.get_children()), None)
