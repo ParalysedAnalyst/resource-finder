@@ -29,14 +29,13 @@ def preselect_by_air_distance(teams_df: pd.DataFrame, site_lon: float, site_lat:
     return tmp.sort_values("air_km").head(top_n).reset_index(drop=True)
 
 # Call OSRM API for remaining teams and order by driving distance, closest first
-def route_rank_teams(teams_df: pd.DataFrame, site_lon: float, site_lat: float, top_n: int = 20):
-    """Preselect by air distance, call OSRM, return sorted DataFrame."""
+def route_rank_teams(teams_df: pd.DataFrame, site_lon: float, site_lat: float, top_n: int = 20, include_geometry: bool = True) -> pd.DataFrame:
     cand = preselect_by_air_distance(teams_df, site_lon, site_lat, top_n=top_n)
     if cand.empty:
         return pd.DataFrame(columns=[
             "intContractorID","Contractor","BusinessUnit","Postcode",
             "InternalContractor","team_lon","team_lat","air_km",
-            "drive_km","drive_min","co2_kg"
+            "drive_km","drive_min","co2_kg","geometry"
         ])
     rows = []
     for _, r in cand.iterrows():
@@ -45,6 +44,7 @@ def route_rank_teams(teams_df: pd.DataFrame, site_lon: float, site_lat: float, t
             start_lat=float(r["Latitude"]),
             dest_lon=site_lon,
             dest_lat=site_lat,
+            include_geometry=include_geometry,
         )
         rows.append({
             "intContractorID": r.get("intContractorID"),
@@ -58,5 +58,6 @@ def route_rank_teams(teams_df: pd.DataFrame, site_lon: float, site_lat: float, t
             "drive_km": res["distance_km"],
             "drive_min": res["duration_min"],
             "co2_kg": res["co2_kg"],
+            "geometry": res.get("geometry"),  # may be None if include_geometry=False
         })
     return pd.DataFrame(rows).sort_values(["drive_min", "drive_km"]).reset_index(drop=True)
