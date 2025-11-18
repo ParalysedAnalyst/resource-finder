@@ -120,7 +120,7 @@ class ResourceFinderApp:
         self.canvas.get_tk_widget().grid(row=0, column=0, sticky="nsew")
         self._draw_map()  # blank state
 
-        self.status = tk.StringVar(value="Enter a postcode (1) and tab away to load isochrones, then Apply filters (3).")
+        self.status = tk.StringVar(value="Enter a postcode (1) and tab away to load isochrones, Select yoru filter parameters (2) and then Apply filters (3).")
         ttk.Label(self.root, textvariable=self.status).grid(row=4, column=0, columnspan=2, sticky="ew", padx=12, pady=(0,8))
 
     # ---------- map drawing ----------
@@ -214,20 +214,39 @@ class ResourceFinderApp:
         self.status.set(f"Applied filters: {len(self.filtered)} team(s) in {minutes} minutes.")
 
     def on_calculate_routes(self):
-        if self.site_lon is None or self.filtered is None or self.filtered.empty:
-            messagebox.showinfo("Info", "Apply filters first with at least one team.")
-            return
-        # Compute OSRM (with geometry) for the filtered set (top N inside helper)
-        routed = route_rank_teams(self.filtered, self.site_lon, self.site_lat, top_n=20, include_geometry=True)
-        if routed.empty:
-            messagebox.showinfo("Info", "No routes calculated.")
-            return
-        # Keep the geometry for selection-based rendering
-        self.routes_df = routed
-        # Show distances/times in table
-        self._populate(routed[self.COLS])
-        self._draw_map()  # no route yet
-        self.status.set(f"Calculated routes for {len(routed)} team(s). Select a row to view the route.")
+    if self.site_lon is None or self.filtered is None or self.filtered.empty:
+        messagebox.showinfo("Info", "Apply filters first with at least one team.")
+        return
+
+    # OSRM with geometry for the filtered set (top N inside helper)
+    routed = route_rank_teams(self.filtered, self.site_lon, self.site_lat, top_n=20, include_geometry=True)
+    if routed.empty:
+        messagebox.showinfo("Info", "No routes calculated.")
+        return
+
+    # Keep geometry for selection-based rendering
+    self.routes_df = routed
+
+    # Populate the table (sorted fastest-first by helper)
+    self._populate(routed[self.COLS])
+
+    # Auto-select the FIRST (fastest) row and draw its route
+    first_id = next(iter(self.tree.get_children()), None)
+    if first_id:
+        self.tree.selection_set(first_id)
+        self.tree.focus(first_id)
+        # this will call _draw_map(show_route=...) using the selected row
+        self.on_row_select()
+
+        fastest = routed.iloc[0]
+        self.status.set(
+            f"Calculated routes for {len(routed)} team(s). "
+            f"Showing fastest: {fastest['Contractor']} ({fastest['drive_min']:.1f} min)."
+        )
+    else:
+        # Fallback: just refresh map without a specific route
+        self._draw_map()
+        self.status.set(f"Calculated routes for {len(routed)} team(s).")
 
     def on_row_select(self, event=None):
         if self.routes_df.empty:
