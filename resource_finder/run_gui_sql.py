@@ -2,7 +2,7 @@ import pandas as pd
 import sqlalchemy as sa
 from urllib.parse import quote_plus
 
-from resource_finder.gui_app import main
+from .gui_app import main
 
 # SQL connection details (Windows auth/trusted connection)
 server = "dblistener1"
