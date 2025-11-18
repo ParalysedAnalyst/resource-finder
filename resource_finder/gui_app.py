@@ -13,8 +13,8 @@ from api_config import geocode_postcode, fetch_isochrone, PostcodeNotFound
 from geo_config import isochrone_to_gdf, teams_to_gdf, filter_teams_by_minutes, list_business_units, apply_team_filters
 from routing_config import route_rank_teams
 
-# --- GC palette ---
-PALETTE = {
+# GC human_nature
+human_nature = {
     "GC Dark Green": "#294238",
     "GC Light Green": "#b2d235",
     "GC Mid Green":  "#50b748",
@@ -22,17 +22,18 @@ PALETTE = {
     "GC Light Grey": "#e6ebe3",
 }
 
+#
 def _apply_styles(root: tk.Tk):
-    root.configure(bg=PALETTE["GC Light Grey"])
+    root.configure(bg=human_nature["GC Light Grey"])
     style = ttk.Style(root)
     try: style.theme_use("clam")
     except Exception: pass
-    style.configure("TFrame", background=PALETTE["GC Light Grey"])
-    style.configure("TLabel", background=PALETTE["GC Light Grey"], foreground=PALETTE["GC Dark Green"])
-    style.configure("Header.TLabel", font=("Segoe UI", 11, "bold"), foreground=PALETTE["GC Dark Green"])
-    style.configure("TButton", padding=8, foreground="white", background=PALETTE["GC Mid Green"])
-    style.map("TButton", background=[("active", PALETTE["GC Light Green"])])
-    style.configure("Go.TButton", padding=12, font=("Segoe UI", 11, "bold"), foreground="white", background=PALETTE["GC Orange"])
+    style.configure("TFrame", background=human_nature["GC Light Grey"])
+    style.configure("TLabel", background=human_nature["GC Light Grey"], foreground=human_nature["GC Dark Green"])
+    style.configure("Header.TLabel", font=("Segoe UI", 11, "bold"), foreground=human_nature["GC Dark Green"])
+    style.configure("TButton", padding=8, foreground="white", background=human_nature["GC Mid Green"])
+    style.map("TButton", background=[("active", human_nature["GC Light Green"])])
+    style.configure("Go.TButton", padding=12, font=("Segoe UI", 11, "bold"), foreground="white", background=human_nature["GC Orange"])
     style.map("Go.TButton", background=[("active", "#ff8f3b")])
 
 def _minutes_from_tab(nb: ttk.Notebook) -> int:
@@ -68,7 +69,7 @@ class ResourceFinderApp:
         self.bu_combo.set("(Any)")
         self.bu_combo.grid(row=2, column=1, sticky="w", padx=(0,8))
 
-        # Internal/Contractor radios (compact)
+        # Internal/Contractor radios
         ic = ttk.Frame(top); ic.grid(row=2, column=2, sticky="w")
         ttk.Radiobutton(ic, text="Either", value="either", variable=self.internal_var).pack(side="left", padx=3)
         ttk.Radiobutton(ic, text="Direct", value="1", variable=self.internal_var).pack(side="left", padx=3)
