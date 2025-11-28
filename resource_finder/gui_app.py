@@ -1,14 +1,18 @@
+import os
+from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, messagebox
-from requests import HTTPError
+
 import pandas as pd
 import geopandas as gpd
-from shapely.geometry import Point, LineString
+from shapely.geometry import Point, LineString, box
+
 import matplotlib
 matplotlib.use("TkAgg")
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import matplotlib.pyplot as plt
-import contextily as cx
+
+from requests import HTTPError  # only for message clarity in API errors
 
 from .api_config import geocode_postcode, fetch_isochrone, PostcodeNotFound
 from .geo_config import (
@@ -17,7 +21,41 @@ from .geo_config import (
 )
 from .routing_config import route_rank_teams
 
-# Ground Control human_nature
+# Base map download/cache
+import requests
+
+NE_URL = ("https://www.naturalearthdata.com/http//www.naturalearthdata.com/"
+          "download/110m/cultural/ne_110m_admin_0_countries.zip")
+CACHE_DIR = Path.home() / ".resource_finder_cache"
+CACHE_ZIP = CACHE_DIR / "ne_110m_admin_0_countries.zip"
+
+def _requests_kwargs():
+    """Respect proxy/SSL env like the rest of your app."""
+    http = os.getenv("HTTP_PROXY") or os.getenv("http_proxy")
+    https = os.getenv("HTTPS_PROXY") or os.getenv("https_proxy")
+    verify = True
+    if os.getenv("DISABLE_SSL_VERIFY", "").lower() in ("1", "true", "yes"):
+        verify = False
+    kw = {"verify": verify}
+    if http or https:
+        kw["proxies"] = {"http": http, "https": https}
+    return kw
+
+def _ensure_world_zip():
+    """Ensure Natural Earth zip is cached locally (one-time download)."""
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    if CACHE_ZIP.exists() and CACHE_ZIP.stat().st_size > 0:
+        return
+    with requests.get(NE_URL, stream=True, timeout=60, **_requests_kwargs()) as r:
+        r.raise_for_status()
+        with open(CACHE_ZIP, "wb") as f:
+            for chunk in r.iter_content(8192):
+                if chunk:
+                    f.write(chunk)
+    print(f"[basemap] downloaded Natural Earth -> {CACHE_ZIP}")
+
+
+# Ground Control palette
 human_nature = {
     "GC Dark Green": "#294238",
     "GC Light Green": "#b2d235",
@@ -29,16 +67,21 @@ human_nature = {
 def _apply_styles(root: tk.Tk):
     root.configure(bg=human_nature["GC Light Grey"])
     style = ttk.Style(root)
-    try: style.theme_use("clam")
-    except Exception: pass
+    try:
+        style.theme_use("clam")
+    except Exception:
+        pass
     style.configure("TFrame", background=human_nature["GC Light Grey"])
     style.configure("TLabel", background=human_nature["GC Light Grey"], foreground=human_nature["GC Dark Green"])
     style.configure("Header.TLabel", font=("Segoe UI", 11, "bold"), foreground=human_nature["GC Dark Green"])
     style.configure("TButton", padding=8, foreground="white", background=human_nature["GC Mid Green"])
     style.map("TButton", background=[("active", human_nature["GC Light Green"])])
-    style.configure("Go.TButton", padding=12, font=("Segoe UI", 11, "bold"), foreground="white", background=human_nature["GC Orange"])
+    style.configure("Go.TButton", padding=12, font=("Segoe UI", 11, "bold"),
+                    foreground="white", background=human_nature["GC Orange"])
     style.map("Go.TButton", background=[("active", "#ff8f3b")])
 
+
+# GUI
 class ResourceFinderApp:
     COLS = ("Contractor","BusinessUnit","Postcode","InternalContractor","drive_min","drive_km","co2_kg")
     HEADINGS = {
@@ -47,56 +90,63 @@ class ResourceFinderApp:
     }
 
     def __init__(self, root: tk.Tk, fieldteams: pd.DataFrame):
-        self.root = root; self.root.title("Field Team Resource Finder"); _apply_styles(self.root)
+        self.root = root
+        self.root.title("Field Team Resource Finder")
+        _apply_styles(self.root)
 
         # Data & state
         self.df = fieldteams.copy()
         self.teams_gdf = teams_to_gdf(self.df)
         self.current_pc = None
-        self.site_lon = None; self.site_lat = None
+        self.site_lon = None
+        self.site_lat = None
         self.iso_gdf = None
         self.filtered = pd.DataFrame()
         self.routes_df = pd.DataFrame()
+        self._world3857 = None  # cached Natural Earth polygons (EPSG:3857)
 
-        # Tk variables
-        self.pc_var = tk.StringVar(value="")
-        self.bu_var = tk.StringVar(value="(Any)")
-        self.internal_var = tk.StringVar(value="either")  # either / 1 / 0
-        self.sla_var = tk.BooleanVar(value=False)
-        self.minutes_var = tk.StringVar(value="60")       # 15/30/45/60
+        # Tk variables (init BEFORE building widgets, so they're available)
+        self.pc_var = tk.StringVar(master=self.root, value="")
+        self.bu_var = tk.StringVar(master=self.root, value="(Any)")
+        self.internal_var = tk.StringVar(master=self.root, value="either")  # either / 1 / 0
+        self.sla_var = tk.BooleanVar(master=self.root, value=False)
+        self.minutes_var = tk.StringVar(master=self.root, value="60")       # 15/30/45/60
+        self.status = tk.StringVar(master=self.root, value="")              # status bar
 
         self._build()
 
-    # GUI Details
+    # UI build
     def _build(self):
-        top = ttk.Frame(self.root); top.grid(row=0, column=0, columnspan=2, sticky="ew", padx=12, pady=8)
-        ttk.Label(top, text="Field Team Resource Finder", style="Header.TLabel").grid(row=0, column=0, columnspan=6, sticky="w", pady=(0,6))
+        top = ttk.Frame(self.root)
+        top.grid(row=0, column=0, columnspan=2, sticky="ew", padx=12, pady=8)
+        ttk.Label(top, text="Field Team Resource Finder", style="Header.TLabel")\
+            .grid(row=0, column=0, columnspan=6, sticky="w", pady=(0,6))
 
-        # 1) Postcode
+        # Postcode
         ttk.Label(top, text="1) Postcode:").grid(row=1, column=0, sticky="w")
         pc_entry = ttk.Entry(top, textvariable=self.pc_var, width=18)
         pc_entry.grid(row=2, column=0, sticky="w", padx=(0,8))
         pc_entry.bind("<FocusOut>", self.on_postcode_changed)
         pc_entry.bind("<Return>", self.on_postcode_changed)
 
-        # 2) Business Unit
+        # Business Unit
         ttk.Label(top, text="2) Business Unit:").grid(row=1, column=1, sticky="w")
         self.bu_combo = ttk.Combobox(top, textvariable=self.bu_var, width=28, state="readonly")
         self.bu_combo["values"] = list_business_units(self.df) if "BusinessUnit" in self.df.columns else ["(Any)"]
         self.bu_combo.set("(Any)")
         self.bu_combo.grid(row=2, column=1, sticky="w", padx=(0,8))
 
-        # Internal Contractor
+        # Internal / Contractor
         ic = ttk.Frame(top); ic.grid(row=2, column=2, sticky="w")
         ttk.Radiobutton(ic, text="Either", value="either", variable=self.internal_var).pack(side="left", padx=3)
         ttk.Radiobutton(ic, text="Direct", value="1", variable=self.internal_var).pack(side="left", padx=3)
         ttk.Radiobutton(ic, text="Contractor", value="0", variable=self.internal_var).pack(side="left", padx=3)
 
-        # SLA toggle (inline)
+        # SLA toggle (placeholder)
         ttk.Checkbutton(top, variable=self.sla_var, text="Include teams not meeting SLAs (coming soon)")\
             .grid(row=2, column=3, sticky="w")
 
-        # Minutes
+        # Minutes bar
         bar = ttk.Frame(self.root); bar.grid(row=1, column=0, columnspan=2, sticky="ew", padx=12, pady=(0,6))
         ttk.Label(bar, text="Travel time band:").pack(side="left", padx=(0,6))
         for m in ("15","30","45","60"):
@@ -107,7 +157,7 @@ class ResourceFinderApp:
         ttk.Button(btns, text="3) Apply filters", command=self.on_apply_filters).pack(side="left")
         ttk.Button(btns, text="4) Calculate drive times", style="Go.TButton", command=self.on_calculate_routes).pack(side="right")
 
-        # Layout: table (left) and map (right)
+        # Table (left) + Map (right)
         self.root.grid_columnconfigure(0, weight=1); self.root.grid_columnconfigure(1, weight=1)
         self.root.grid_rowconfigure(3, weight=1)
 
@@ -121,7 +171,6 @@ class ResourceFinderApp:
         table.grid_rowconfigure(0, weight=1); table.grid_columnconfigure(0, weight=1)
         self.tree.bind("<<TreeviewSelect>>", self.on_row_select)
 
-        # Map figure
         map_wrap = ttk.Frame(self.root); map_wrap.grid(row=3, column=1, sticky="nsew", padx=(6,12), pady=(0,12))
         map_wrap.grid_rowconfigure(0, weight=1); map_wrap.grid_columnconfigure(0, weight=1)
         self.fig, self.ax = plt.subplots(figsize=(5,4), dpi=100)
@@ -129,11 +178,12 @@ class ResourceFinderApp:
         self.canvas.get_tk_widget().grid(row=0, column=0, sticky="nsew")
         self._draw_map()  # initial blank map
 
-        # Status line
-        self.status = tk.StringVar(value="Enter a postcode (1) and tab away to load isochrones, then Apply filters (3).")
+        # Status line (use the pre-created StringVar)
+        if not self.status.get():
+            self.status.set("Enter a postcode (1) and tab away to load isochrones, then Apply filters (3).")
         ttk.Label(self.root, textvariable=self.status).grid(row=4, column=0, columnspan=2, sticky="ew", padx=12, pady=(0,8))
 
-    # ------------ helpers ------------
+    # ---------- helpers ----------
     def _populate(self, df: pd.DataFrame):
         self.tree.delete(*self.tree.get_children())
         disp = df.copy()
@@ -143,28 +193,54 @@ class ResourceFinderApp:
             self.tree.insert("", "end", values=tuple(row.get(c, "") for c in self.COLS))
 
     def _refresh_bu_options(self, within_df: pd.DataFrame):
-        # Prefer BUs from the minutes subset; fall back to all BUs if none
         values = list_business_units(within_df) if not within_df.empty else list_business_units(self.df)
         self.bu_combo["values"] = values
         if self.bu_var.get() not in values:
             self.bu_combo.set("(Any)")
 
+    def _load_world(self):
+        """Load and cache Natural Earth (110m admin_0) in EPSG:3857."""
+        if self._world3857 is not None:
+            return
+        try:
+            _ensure_world_zip()
+            if not CACHE_ZIP.exists():
+                self._world3857 = None
+                try:
+                    self.status.set("Offline basemap unavailable (download failed).")
+                except Exception:
+                    pass
+                return
+            # GeoPandas can read a zipped shapefile via the "zip://" URI
+            self._world3857 = gpd.read_file(f"zip://{CACHE_ZIP}").to_crs(epsg=3857)
+            print(f"[basemap] loaded {len(self._world3857)} country polygons.")
+        except Exception as e:
+            print(f"[basemap] load error: {e}")
+            self._world3857 = None
+            try:
+                self.status.set("Offline basemap unavailable.")
+            except Exception:
+                pass
+
     def _draw_map(self, show_route: LineString | None = None):
+        """
+        Offline map using Natural Earth (countries only).
+        Overlays: isochrone, teams, site, and optional route.
+        """
         self.ax.clear()
-        self.ax.set_facecolor("#eef2eb")
+        # Slightly darker background so land mask stands out
+        self.ax.set_facecolor("#dadfde")
+        self._load_world()
 
-        layers = []
-
-        # 1) Isochrone polygon (selected minutes) → 3857
+        # ----- prepare layers (to 3857) -----
+        iso3857 = None
         if self.iso_gdf is not None:
             minutes = int(self.minutes_var.get())
             sel = self.iso_gdf[self.iso_gdf["minutes"] == minutes]
             if not sel.empty:
                 iso3857 = sel.to_crs(epsg=3857)
-                iso3857.plot(ax=self.ax, facecolor="#b2d235", edgecolor="#294238", alpha=0.25, zorder=2)
-                layers.append(iso3857)
 
-        # 2) Teams (filtered) → 3857 points
+        teams3857 = None
         if not self.filtered.empty:
             gdf4326 = gpd.GeoDataFrame(
                 self.filtered,
@@ -172,43 +248,65 @@ class ResourceFinderApp:
                 crs="EPSG:4326",
             )
             teams3857 = gdf4326.to_crs(epsg=3857)
-            teams3857.plot(ax=self.ax, marker="o", markersize=20, color="#50b748", alpha=0.95, zorder=4)
-            layers.append(teams3857)
 
-        # 3) Site point
+        site3857 = None
         if self.site_lon is not None and self.site_lat is not None:
             site3857 = gpd.GeoSeries([Point(self.site_lon, self.site_lat)], crs="EPSG:4326").to_crs(epsg=3857)
-            site3857.plot(ax=self.ax, marker="*", color="#f57821", markersize=140, zorder=5)
-            layers.append(site3857)
 
-        # 4) Selected route (if any)
+        route3857 = None
         if show_route is not None:
             route3857 = gpd.GeoSeries([show_route], crs="EPSG:4326").to_crs(epsg=3857)
-            route3857.plot(ax=self.ax, linewidth=3, color="#294238", zorder=6)
-            layers.append(route3857)
 
-        # Fit bounds
-        if layers:
+        # ----- bounds -----
+        layers_for_bounds = [g for g in (iso3857, teams3857, site3857, route3857) if g is not None and len(g) > 0]
+        if layers_for_bounds:
             bounds = gpd.GeoSeries(
-                [lay.unary_union if hasattr(lay, "unary_union") else lay.iloc[0] for lay in layers],
-                crs="EPSG:3857"
+                [g.unary_union if hasattr(g, "unary_union") else g.iloc[0] for g in layers_for_bounds],
+                crs="EPSG:3857",
             ).total_bounds
             xmin, ymin, xmax, ymax = bounds
             dx, dy = (xmax - xmin) * 0.08 or 1000, (ymax - ymin) * 0.08 or 1000
-            self.ax.set_xlim(xmin - dx, xmax + dx); self.ax.set_ylim(ymin - dy, ymax + dy)
+        else:
+            # UK-ish fallback extent
+            xmin, ymin, xmax, ymax = (-900000, 6000000, 500000, 8500000)
+            dx, dy = 0, 0
 
-        # Basemap tiles
-        try:
-            cx.add_basemap(self.ax, source=cx.providers.CartoDB.Positron, zoom=None)
-        except Exception:
-            pass
+        # offline basemap
+        if self._world3857 is None:
+            self.status.set("Offline basemap not available (Natural Earth).")
+        else:
+            view = box(xmin - dx, ymin - dy, xmax + dx, ymax + dy)
+            try:
+                clip_gdf = gpd.GeoDataFrame(geometry=[view], crs="EPSG:3857")
+                bg = gpd.clip(self._world3857, clip_gdf)
+            except Exception:
+                bg = self._world3857
 
+            if bg is not None and not bg.empty:
+                # stronger contrast so it’s obvious
+                bg.plot(ax=self.ax, facecolor="#d8d8d8", edgecolor="#9a9a9a", linewidth=1.0, zorder=0)
+            else:
+                # total fallback
+                self._world3857.plot(ax=self.ax, facecolor="#d8d8d8", edgecolor="#9a9a9a", linewidth=1.0, zorder=0)
+
+        # overlays 
+        if iso3857 is not None:
+            iso3857.plot(ax=self.ax, facecolor="#b2d235", edgecolor="#294238", alpha=0.35, zorder=2)
+        if teams3857 is not None:
+            teams3857.plot(ax=self.ax, marker="o", markersize=20, color="#50b748", alpha=0.95, zorder=4)
+        if site3857 is not None:
+            site3857.plot(ax=self.ax, marker="*", color="#f57821", markersize=140, zorder=5)
+        if route3857 is not None:
+            route3857.plot(ax=self.ax, linewidth=3, color="#294238", zorder=6)
+
+        self.ax.set_xlim(xmin - dx, xmax + dx)
+        self.ax.set_ylim(ymin - dy, ymax + dy)
         self.ax.set_xticks([]); self.ax.set_yticks([])
         self.ax.set_title("Map view", fontsize=10)
         self.fig.tight_layout()
         self.canvas.draw_idle()
 
-    # ------------ events ------------
+    # events
     def on_postcode_changed(self, event=None):
         pc = self.pc_var.get().strip().upper()
         if not pc or pc == self.current_pc:
@@ -264,7 +362,7 @@ class ResourceFinderApp:
             return
 
         self.routes_df = routed
-        self._populate(routed[list(self.COLS)])
+        self._populate(routed[list(self.COLS)])  # ensure correct order/exists
 
         # Auto-select fastest row and draw its route
         first_id = next(iter(self.tree.get_children()), None)
@@ -302,23 +400,23 @@ class ResourceFinderApp:
             if geom["type"] == "LineString":
                 line = LineString(geom["coordinates"])
             else:
-                # take first part of MultiLineString
                 coords = geom.get("coordinates") or []
                 if coords:
                     line = LineString(coords[0])
 
         self._draw_map(show_route=line)
 
+
+# Entrypoint from __main__.py passes the real SQL DataFrame here
 def main(fieldteams=None):
     if fieldteams is None:
-        fieldteams = pd.DataFrame(columns=[
-            "intContractorID","Contractor","BusinessUnit","Postcode",
-            "Latitude","Longitude","InternalContractor"
-        ])
+        # We no longer run non-SQL mode. If invoked without DF, fail loudly.
+        raise RuntimeError("This application must be launched via 'python -m resource_finder' (__main__ loads SQL).")
     root = tk.Tk()
     app = ResourceFinderApp(root, fieldteams)
     root.geometry("1100x700")
     root.mainloop()
 
 if __name__ == "__main__":
-    main()
+    # prevent accidental direct run of this module without SQL
+    raise SystemExit("Run the app with: python -m resource_finder")
