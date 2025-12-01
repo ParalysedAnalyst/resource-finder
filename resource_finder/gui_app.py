@@ -1,29 +1,29 @@
-from pathlib import Path
+import numbers
 import tkinter as tk
 from tkinter import ttk, messagebox
 
 import pandas as pd
 import geopandas as gpd
-from shapely.geometry import Point, LineString, box
+from shapely.geometry import Point, LineString
 
 import matplotlib
 matplotlib.use("TkAgg")
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import matplotlib.pyplot as plt
 
-from requests import HTTPError  # only for clearer API error messages
+import contextily as cx
+
+from requests import HTTPError  # clear API error messages
 
 from .api_config import geocode_postcode, fetch_isochrone, PostcodeNotFound
 from .geo_config import (
-    isochrone_to_gdf, teams_to_gdf, filter_teams_by_minutes,
-    list_business_units, apply_team_filters,
+    isochrone_to_gdf,
+    teams_to_gdf,
+    filter_teams_by_minutes,
+    list_business_units,
+    apply_team_filters,
 )
 from .routing_config import route_rank_teams
-
-# Offline basemap
-BASE_DIR = Path(__file__).resolve().parent
-NE_SHAPEFILE = BASE_DIR / "Natural Earth" / "ne_110m_admin_0_countries.shp"
-
 
 # Ground Control palette
 human_nature = {
@@ -77,7 +77,8 @@ class ResourceFinderApp:
         "Contractor",
         "BusinessUnit",
         "Postcode",
-        "InternalContractor",
+        "Contact",
+        "Email",
         "drive_min",
         "drive_km",
         "co2_kg",
@@ -86,7 +87,8 @@ class ResourceFinderApp:
         "Contractor": "Team Name",
         "BusinessUnit": "Business Unit",
         "Postcode": "Postcode",
-        "InternalContractor": "Type",
+        "Contact": "Contact number",
+        "Email": "Email",
         "drive_min": "Drive (min)",
         "drive_km": "Distance (km)",
         "co2_kg": "CO₂ (kg)",
@@ -97,7 +99,7 @@ class ResourceFinderApp:
         self.root.title("Field Team Resource Finder")
         _apply_styles(self.root)
 
-    # Data & state
+        # Data & state
         self.df = fieldteams.copy()
         self.teams_gdf = teams_to_gdf(self.df)
         self.current_pc = None
@@ -106,10 +108,11 @@ class ResourceFinderApp:
         self.iso_gdf = None
         self.filtered = pd.DataFrame()
         self.routes_df = pd.DataFrame()
-        self._world3857 = None  # cached basemap polygons (EPSG:3857)
-        self._basemap_error_reported = False  # avoid repeated pop-ups
 
-    # Tk variables
+        # Avoid repeated basemap error popups
+        self._basemap_error_reported = False
+
+        # Tk variables
         self.pc_var = tk.StringVar(master=self.root, value="")
         self.bu_var = tk.StringVar(master=self.root, value="(Any)")
         self.internal_var = tk.StringVar(master=self.root, value="either")  # either / 1 / 0
@@ -118,6 +121,7 @@ class ResourceFinderApp:
         self.status = tk.StringVar(master=self.root, value="")
 
         self._build()
+
 
     # User Interface construction
     def _build(self):
@@ -148,7 +152,7 @@ class ResourceFinderApp:
         self.bu_combo.set("(Any)")
         self.bu_combo.grid(row=2, column=1, sticky="w", padx=(0, 8))
 
-    # Internal / Contractor toggle
+    # Internal Contractor toggle
         ic = ttk.Frame(top)
         ic.grid(row=2, column=2, sticky="w")
         ttk.Radiobutton(ic, text="Either", value="either", variable=self.internal_var).pack(
@@ -201,7 +205,7 @@ class ResourceFinderApp:
         self.tree = ttk.Treeview(
             table, columns=self.COLS, show="headings", height=18
         )
-        for c, w in zip(self.COLS, (180, 160, 100, 110, 90, 110, 90)):
+        for c, w in zip(self.COLS, (180, 160, 100, 140, 180, 90, 110, 90)):
             self.tree.heading(c, text=self.HEADINGS[c])
             self.tree.column(c, width=w, anchor="w")
 
@@ -220,11 +224,17 @@ class ResourceFinderApp:
         map_wrap.grid_columnconfigure(0, weight=1)
 
         self.fig, self.ax = plt.subplots(figsize=(5, 4), dpi=100)
-        self.canvas = FigureCanvasTkAgg(self.fig, master=map_wrap)
-        self.canvas.get_tk_widget().grid(row=0, column=0, sticky="nsew")
-        self._draw_map()  # initial blank map
+        self.fig.set_facecolor("#dadfde")
 
-        # Status line
+    # Make the map fill the entire canvas area
+        self.fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
+        self.canvas = FigureCanvasTkAgg(self.fig, master=map_wrap)
+        widget = self.canvas.get_tk_widget()
+        widget.grid(row=0, column=0, sticky="nsew")
+        widget.configure(borderwidth=0, highlightthickness=0)
+        self._draw_map()
+
+    # Status line
         if not self.status.get():
             self.status.set(
                 "Enter a postcode (1) and press Enter, then Apply filters (3)."
@@ -233,24 +243,29 @@ class ResourceFinderApp:
             row=4, column=0, columnspan=2, sticky="ew", padx=12, pady=(0, 8)
         )
 
+
     # Helper methods
-    # Internal Contractor: 1=Direct, 0=Contractor
     def _populate(self, df: pd.DataFrame):
         self.tree.delete(*self.tree.get_children())
         disp = df.copy()
-        if "InternalContractor" in disp.columns:
-            disp["InternalContractor"] = (
-                disp["InternalContractor"]
-                .map({1: "Direct", 0: "Contractor"})
-                .fillna("")
-            )
 
         for _, row in disp.iterrows():
-            self.tree.insert(
-                "", "end", values=tuple(row.get(c, "") for c in self.COLS)
-            )
+            values = []
+            for col in self.COLS:
+                if col == "Contact":
+                    val = row.get("MobileTel", "")
+                elif col == "Email":
+                    val = row.get("Email", "")
+                else:
+                    val = row.get(col, "")
 
-    # Refresh Business Unit options based on currently filtered teams
+                # Round numeric values to 2 decimal places
+                if isinstance(val, numbers.Number):
+                    val = f"{float(val):.2f}"
+                values.append(val)
+
+            self.tree.insert("", "end", values=tuple(values))
+
     def _refresh_bu_options(self, within_df: pd.DataFrame):
         values = (
             list_business_units(within_df)
@@ -261,41 +276,18 @@ class ResourceFinderApp:
         if self.bu_var.get() not in values:
             self.bu_combo.set("(Any)")
 
-    # Basemap loading and drawing
-    def _load_world(self):
-        """
-        Load and cache Natural Earth (110m admin_0) from a local shapefile in EPSG:3857.
-        Any error results in a single simple message to the user and no basemap.
-        """
-        if self._world3857 is not None:
-            return
-
-        try:
-            if not NE_SHAPEFILE.exists():
-                raise FileNotFoundError(f"Basemap file not found at {NE_SHAPEFILE}")
-            self._world3857 = gpd.read_file(NE_SHAPEFILE).to_crs(epsg=3857)
-        except Exception:
-            self._world3857 = None
-            if not self._basemap_error_reported:
-                self._basemap_error_reported = True
-                messagebox.showerror(
-                    "Map background",
-                    "Unable to load the map background. "
-                    "The application will still work without it.",
-                )
-                self.status.set("Map background not available.")
-
-    # Map drawing
     def _draw_map(self, show_route: LineString | None = None):
         """
-        Draw the map using the offline Natural Earth basemap (if available)
-        and overlay the isochrone, teams, site, and optional route.
+        Draw a detailed web basemap (OpenStreetMap via contextily) and overlay
+        the isochrone, teams, site, and optional route.
+
+        If the basemap cannot be loaded (missing contextily, no internet, etc.),
+        a simple message is shown once and the app continues with a plain background.
         """
         self.ax.clear()
         self.ax.set_facecolor("#dadfde")
-        self._load_world()
 
-    # mapping projections
+        # --- prepare layers in EPSG:3857 ---
         iso3857 = None
         if self.iso_gdf is not None:
             minutes = int(self.minutes_var.get())
@@ -327,10 +319,12 @@ class ResourceFinderApp:
         if show_route is not None:
             route3857 = gpd.GeoSeries([show_route], crs="EPSG:4326").to_crs(epsg=3857)
 
-        # Mapping boundaries
+        # --- bounds ---
         layers_for_bounds = [
-            g for g in (iso3857, teams3857, site3857, route3857) if g is not None and len(g) > 0
+            g for g in (iso3857, teams3857, site3857, route3857)
+            if g is not None and len(g) > 0
         ]
+
         if layers_for_bounds:
             bounds = gpd.GeoSeries(
                 [
@@ -342,37 +336,42 @@ class ResourceFinderApp:
             xmin, ymin, xmax, ymax = bounds
             dx, dy = (xmax - xmin) * 0.08 or 1000, (ymax - ymin) * 0.08 or 1000
         else:
-            # Simple default (roughly UK area)
+            # Simple default extent (roughly UK area) if nothing is selected yet
             xmin, ymin, xmax, ymax = (-900000, 6000000, 500000, 8500000)
             dx, dy = 0, 0
 
-        # Basemap loading and drawing
-        if self._world3857 is not None:
-            view = box(xmin - dx, ymin - dy, xmax + dx, ymax + dy)
+        xmin_b, xmax_b = xmin - dx, xmax + dx
+        ymin_b, ymax_b = ymin - dy, ymax + dy
+
+        # --- detailed basemap via contextily ---
+        if cx is not None:
             try:
-                clip_gdf = gpd.GeoDataFrame(geometry=[view], crs="EPSG:3857")
-                bg = gpd.clip(self._world3857, clip_gdf)
+                self.ax.set_xlim(xmin_b, xmax_b)
+                self.ax.set_ylim(ymin_b, ymax_b)
+                # Tiles with roads and features
+                cx.add_basemap(self.ax, crs="EPSG:3857", attribution=False)
             except Exception:
-                bg = self._world3857
-
-            if bg is not None and not bg.empty:
-                bg.plot(
-                    ax=self.ax,
-                    facecolor="#d8d8d8",
-                    edgecolor="#9a9a9a",
-                    linewidth=1.0,
-                    zorder=0,
+                # If tiles fail, fall back to plain background and show a simple message
+                self.ax.set_facecolor("#dadfde")
+                if not self._basemap_error_reported:
+                    self._basemap_error_reported = True
+                    messagebox.showerror(
+                        "Map background",
+                        "Unable to load the detailed map background.\n\n"
+                        "The application will still work without it.",
+                    )
+                    self.status.set("Map background not available.")
+        else:
+            # contextily is not installed
+            if not self._basemap_error_reported:
+                self._basemap_error_reported = True
+                messagebox.showerror(
+                    "Map background",
+                    "Detailed map background is not available (contextily not installed).",
                 )
-            else:
-                self._world3857.plot(
-                    ax=self.ax,
-                    facecolor="#d8d8d8",
-                    edgecolor="#9a9a9a",
-                    linewidth=1.0,
-                    zorder=0,
-                )
+                self.status.set("Map background not available.")
 
-        # Overlay layers
+        # --- overlays (drawn on top of basemap) ---
         if iso3857 is not None:
             iso3857.plot(
                 ax=self.ax,
@@ -397,16 +396,16 @@ class ResourceFinderApp:
         if route3857 is not None:
             route3857.plot(ax=self.ax, linewidth=3, color="#294238", zorder=6)
 
-        self.ax.set_xlim(xmin - dx, xmax + dx)
-        self.ax.set_ylim(ymin - dy, ymax + dy)
+        self.ax.set_xlim(xmin_b, xmax_b)
+        self.ax.set_ylim(ymin_b, ymax_b)
         self.ax.set_xticks([])
         self.ax.set_yticks([])
         self.ax.set_title("Map view", fontsize=10)
-        self.fig.tight_layout()
         self.canvas.draw_idle()
 
 
     # Event handlers
+
     def on_postcode_changed(self, event=None):
         pc = self.pc_var.get().strip().upper()
         if not pc or pc == self.current_pc:
@@ -418,7 +417,7 @@ class ResourceFinderApp:
             self.iso_gdf = isochrone_to_gdf(iso_gj)
             self.current_pc = pc
 
-    # Default preview: within 60 minutes
+            # Default preview: within 60 minutes
             within60 = filter_teams_by_minutes(
                 self.teams_gdf, self.iso_gdf, minutes=60
             )
@@ -490,9 +489,9 @@ class ResourceFinderApp:
             return
 
         self.routes_df = routed
-        self._populate(routed[list(self.COLS)])
+        self._populate(routed)
 
-    # Auto-select fastest row and draw its route
+        # Auto-select fastest row and draw its route
         first_id = next(iter(self.tree.get_children()), None)
         if first_id:
             self.tree.selection_set(first_id)
@@ -503,7 +502,7 @@ class ResourceFinderApp:
             self.status.set(
                 f"Calculated routes for {len(routed)} team(s). "
                 f"Showing fastest: {fastest['Contractor']} "
-                f"({fastest['drive_min']:.1f} min)."
+                f"({float(fastest['drive_min']):.2f} min)."
             )
         else:
             self._draw_map()
@@ -541,7 +540,7 @@ class ResourceFinderApp:
         self._draw_map(show_route=line)
 
 
-    # Entrypoint from __main__.py passes the real SQL DataFrame here
+# Entrypoint from __main__.py passes the real SQL DataFrame here
 def main(fieldteams=None):
     if fieldteams is None:
         raise RuntimeError(
@@ -549,7 +548,7 @@ def main(fieldteams=None):
             "(__main__ loads the SQL data)."
         )
     root = tk.Tk()
-    app = ResourceFinderApp(root, fieldteams)
+    _ = ResourceFinderApp(root, fieldteams)
     root.geometry("1100x700")
     root.mainloop()
 
