@@ -50,9 +50,11 @@ The application requires the following Python packages:
 
 1. **Clone the repository**:
    ```bash
-   git clone https://github.com/ParalysedAnalyst/resource-finder.git
+   git clone https://github.com/your-organization/resource-finder.git
    cd resource-finder
    ```
+   
+   > **Note**: Replace `your-organization` with the actual GitHub organization or username.
 
 2. **Install dependencies**:
    ```bash
@@ -61,10 +63,12 @@ The application requires the following Python packages:
 
 3. **Configure SQL Server connection** (edit `resource_finder/__main__.py`):
    ```python
-   server   = "your_server_name"
-   database = "your_database_name"
+   server   = "your_server_name"      # Default: "dblistener1"
+   database = "your_database_name"    # Default: "information_centre"
    driver   = urllib.parse.quote_plus("ODBC Driver 17 for SQL Server")
    ```
+   
+   > **Note**: Replace with your specific SQL Server instance and database names. The default values shown are examples from the original configuration.
 
 4. **Configure environment variables** (optional):
    ```bash
@@ -192,12 +196,28 @@ SELECT
     g.Latitude,
     g.Longitude,
     a.InternalContractor
-FROM tblContractor a
-LEFT JOIN Contractor_Business_Unit d ON ...
-LEFT JOIN Business_Unit e ON ...
-LEFT JOIN dbs_PostCode.dbo.tblPostcodes_New g ON ...
-WHERE ...
+FROM
+    tblContractor a
+    LEFT JOIN Contractor_Business_Unit d
+        ON a.intContractorID = d.ContractorID
+    LEFT JOIN Business_Unit e
+        ON d.BusinessUnitID = e.BusinessUnitID
+    LEFT JOIN Business_Unit_Master_Status f
+        ON d.StatusID = f.StatusID
+    LEFT JOIN dbs_PostCode.dbo.tblPostcodes_New g
+        ON REPLACE(a.strPostcode, ' ', '') = g.PostcodeNoSpaces COLLATE Latin1_General_CI_AS
+WHERE
+    ISNULL(a.bDisabled, 0) = 0
+    AND f.StatusID IN (60, 70, 80)
+    AND ISNULL(a.IsTest, 0) = 0
+    AND e.BusinessUnitID != 37;
 ```
+
+**Key Requirements**:
+- Contractor table with postcode information
+- Business unit associations
+- Postcode geocoding table with latitude/longitude
+- Status filtering to exclude disabled and test contractors
 
 ### Coordinate Reference Systems
 
